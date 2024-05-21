@@ -1,0 +1,4 @@
+rw_latency 20
+seek_latency 10000
+shift_latency 10
+ram_size 100M

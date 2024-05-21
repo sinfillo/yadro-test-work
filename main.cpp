@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <iostream>
 #include <optional>
 #include <fstream>
 #include <filesystem>
 
+#include "src/config_parser.h"
 #include "src/file_tape.h"
 #include "src/tape_algo.h"
 
@@ -14,9 +16,15 @@ bool file_exists(const std::string& file_name) {
     return true;
 }
 
-std::optional<size_t> cast_to_valid_number(const std::string& number_str) {
+template <typename T>
+std::optional<T> cast_to_valid_number(const std::string& number_str) {
     try {
-        size_t number = std::stoll(number_str);
+        T number = 0;
+        if (std::is_same_v<T, int64_t>) {
+            number = std::stoll(number_str);
+        } else {
+            number = std::stoi(number_str);
+        }
         if (number <= 0) {
             std::cerr << "Enter the natural number.\n";
             return std::nullopt;
@@ -45,30 +53,68 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    std::optional<size_t> tape_length_opt = cast_to_valid_number(argv[3]);
+    std::optional<size_t> tape_length_opt = cast_to_valid_number<size_t>(argv[3]);
     if (!tape_length_opt.has_value()) {
         return -1;
     }
-    size_t tape_lenght = tape_length_opt.value();
+    size_t tape_length = tape_length_opt.value();
+    try {
+        Ydr::ConfigParser config;
+        config.Register("rw_latency", 40ll);        // nanoseconds
+        config.Register("shift_latency", 30ll);     // nanoseconds
+        config.Register("seek_latency", 10'000ll);  // nanoseconds
+        config.Register("ram_size", 100'000ll);     // bytes
+        config.Parse("config.txt");
 
-    if (!std::filesystem::exists(std::filesystem::path("tmp"))) {
-        std::filesystem::create_directory("tmp");
-    }
-    Ydr::FileTape input_tape("tmp//bin_input");
-    std::ifstream ifs(input_file);
-    int32_t num;
-    while (ifs >> num) {
-        input_tape.Write(num);
-        input_tape.MoveForward();
-    }
-    Ydr::FileTape left_buf_tape("tmp//bin_left_buf");
-    Ydr::FileTape right_buf_tape("tmp//bin_right_buf");
-    Ydr::FileTape output_tape("tmp//bin_output");
-    Ydr::Sort(input_tape, tape_lenght, output_tape, left_buf_tape, right_buf_tape);
+        if (config.Get("rw_latency") <= 0 || config.Get("shift_latency") <= 0 ||
+            config.Get("seek_latency") <= 0) {
+            std::cerr << "Incorrect (negative) latency.\n";
+            return -1;
+        }
+        constexpr int64_t MINIMUM_RAM = 10 * 4096;
+        constexpr int64_t MINIMUM_BLOCKS_IN_RAM = 8;
+        constexpr double SEEK_TO_SCAN_COEF = 2;  // k in inequality k * T(Seek) <= T(Scan)
+        if (config.Get("ram_size") <= MINIMUM_RAM) {
+            std::cerr << "Too small RAM.\n";
+            return -1;
+        }
 
-    std::ofstream ofs(output_file);
-    for (size_t i = 0; i < tape_lenght; ++i) {
-        ofs << output_tape.Read() << " ";
-        output_tape.MoveForward();
+        auto max_int_cnt_in_ram = config.Get("ram_size") / sizeof(int32_t);
+        auto tape_block_size =
+            std::clamp<int64_t>((config.Get("seek_latency") * SEEK_TO_SCAN_COEF) /
+                                    (config.Get("rw_latency") + config.Get("shift_latency")),
+                                1, max_int_cnt_in_ram / MINIMUM_BLOCKS_IN_RAM);
+
+        if (!std::filesystem::exists(std::filesystem::path("tmp"))) {
+            std::filesystem::create_directory("tmp");
+        }
+        Ydr::FileTape input_tape("tmp/bin_input");
+        std::ifstream ifs(input_file);
+        int32_t num;
+        size_t read_nums = 0;
+        while (ifs >> num) {
+            input_tape.WriteAndMoveForward(num);
+            ++read_nums;
+        }
+        if (read_nums != tape_length) {
+            std::cerr << "Number count in program arguments isn't equal amount of numbers have "
+                         "been read.";
+            return -1;
+        }
+        Ydr::FileTape buf_tape("tmp/bin_buf");
+        Ydr::FileTape output_tape("tmp/bin_output");
+        Ydr::Sort(input_tape, tape_length, output_tape, buf_tape, max_int_cnt_in_ram / 2,
+                  tape_block_size);
+
+        std::ofstream ofs(output_file);
+        for (size_t i = 0; i < tape_length; ++i) {
+            ofs << output_tape.ReadAndMoveForward() << " ";
+        }
+    } catch (std::exception& e) {
+        std::cerr << e.what();
+        return -1;
+    } catch (...) {
+        std::cerr << "Something went wrong.\n";
+        return -1;
     }
 }

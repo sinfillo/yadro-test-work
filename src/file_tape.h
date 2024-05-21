@@ -12,6 +12,8 @@ public:
 
     int32_t Read() override;
     void Write(int32_t num) override;
+    int32_t ReadAndMoveForward() override;
+    void WriteAndMoveForward(int32_t num) override;
     void MoveForward() override;
     void MoveBack() override;
     void Seek(size_t pos) override;
